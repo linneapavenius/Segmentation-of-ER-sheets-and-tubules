@@ -23,6 +23,7 @@ function processFile(input, output, file) {
 path = getInfo("image.directory");
 filename = File.nameWithoutExtension;
 
+/*Remove structures bigger than the mean tubule structure (10-12 pixels)*/
 
 run("Duplicate...", "duplicate");
 saveAs("Tiff", path + filename + " Original duplicate");
