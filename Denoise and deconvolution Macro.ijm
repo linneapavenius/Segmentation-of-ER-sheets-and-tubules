@@ -1,79 +1,106 @@
+#@ File (label = "Input file", style = "file") input
+#@ File (label = "PSF file", style = "file") PSFfile
+#@ File (label = "Output directory", style = "directory") outputdir
+#@ String (label = "File suffix", value = ".tif") suffix
 
+bars = newArray("*", "**", "***", "****", "*****", "******", "*******", "********", "*********");
+index = 0;
 
-#@ File (label = "Input directory", style = "directory") input
-#@ File (label = "Output directory", style = "directory") output
-#@ String (label = "File suffix", value = ".czi") suffix
-
-processFolder(input);
-
-// function to scan folders/subfolders/files to find files with correct suffix
-function processFolder(input) {
-	list = getFileList(input);
-	list = Array.sort(list);
-	for (i = 0; i < list.length; i++) {
-		if(File.isDirectory(input + File.separator + list[i]))
-			processFolder(input + File.separator + list[i]);
-		if(endsWith(list[i], suffix))
-			processFile(input, output, list[i]);
-	}
-}
-
-function processFile(input, output, file) {
-	open();
+open(input);
 path = getInfo("image.directory");
 filename = File.nameWithoutExtension;
 
-run("Duplicate...", "duplicate");
-saveAs("Tiff", path + filename + " Original duplicate");
-close("\\Others");
-rename("Original duplicate.tif");
+//remember original hyperstack
+id = getImageID();
+ 
+// number of timepoints
+getDimensions(xDim, yDim, nChannel, zDim, nTime);
 
-// SNR increase, median filter based method
+// bara under debug!!
+//nTime = 3;
 
-run("32-bit");
-run("ROF Denoise", "theta=250");
-saveAs("Tiff", path + filename + " denoised");
-rename("Denoised.tif");
-selectImage("Denoised.tif");
-setAutoThreshold("Default dark");
+print("Timepoints: " + nTime); 
 
-//SBR: removing background through thresholding
+// Split timepoints, denoise and subtract background
+ErodeSteps = 2;
+DilateSteps = 3;
 
-run("Make Binary", "method=MinError calculate black create");
-setOption("BlackBackground", true);
-run("Erode", "stack");
-run("Erode", "stack");
-run("Erode", "stack");
-run("Dilate", "stack");
-run("Dilate", "stack");
-run("Dilate", "stack");
-saveAs("Tiff", path + filename + " threshhold MASK");
-rename("Denoised MASK.tif");
+for (tp = 1; tp <= nTime; tp++) {
+    // select the frame
+    selectImage(id);
+    close("\\Others");
+    Stack.setPosition(1, 1, tp);
+    // extract one frame
+    print("Update:" + "Extracting timepoint: " + tp);
+    run("Reduce Dimensionality...", "channels slices keep");
+	// denoise
+    print("\\Update:" + "Extracting timepoint: " + tp + " denoise");
+	run("32-bit");
+	run("ROF Denoise", "theta=250");
+	rename("denoised");
+	run("Duplicate...", "duplicate");
+	rename("mask");
+	//subtract background by masking	    
+    print("\\Update:" + "Extracting timepoint: " + tp + " denoise" + " subtracting background");
+    setAutoThreshold("Default dark");
+	run("Make Binary", "method=MinError calculate black create");
+	setOption("BlackBackground", true);
+	for (nn = 1; nn<=ErodeSteps; nn++) {
+		run("Erode", "stack");
+	}
+	for (nn = 1; nn<=DilateSteps; nn++) {
+		run("Dilate", "stack");
+	}
+	imageCalculator("AND create 32-bit stack", "denoised", "mask");
+    
+    //save intermediate result    
+    tempFile = outputdir + File.separator + filename + tp;    
+    saveAs("tiff", tempFile);
+    close();
 
-imageCalculator("AND create 32-bit stack", "Denoised.tif","Denoised MASK.tif");
-saveAs("Tiff", path + filename + " denoised final");
-close("\\Others");
+	//DECONVOLUTION
+	inputImage = tempFile + suffix;
+	image = " -image file " + inputImage;
+	psf = " -psf file " + PSFfile;
+	algorithm = " -algorithm RL 25";
+	outputImage = filename + "DCV"+ tp;
+	output = " -out stack noshow " + outputImage;
+	homepath   = " -path " + outputdir;
+	monitor = " -verbose yes ";
+	resources = " -fft FFTW2";
+	resultFile = outputdir + File.separator + outputImage + ".tif";
+	
+	print("Deconvolving: " + inputImage);
+	print(" ");
+	
+	//overwrite existing file by delete -- needed for the while loop
+	if (File.exists(resultFile)) {
+		File.delete(resultFile);
+	}
+	run("DeconvolutionLab2 Run", image + psf + algorithm + resources + monitor + output + homepath);
+	while(!File.exists(resultFile)) {
+    	wait(1000);
+    	print("\\Update:" + bars[(index++)%9]);
+	}
+ 	wait(1000);
+	print("\\Update:" + "Timepoint: " + tp + " of " + nTime + " finished!");
+	run("Collect Garbage");
+	File.delete(inputImage);
+    wait(1000);
+
+}
+ 
+// close all open images
 close("*");
 
-//DECONVOLUTION
+// recombine the images into a hyperstack
+resultFile = outputdir + File.separator + filename + "DCVstack.tif"
+//overwrite existing file by delete -- needed for the while loop
+if (File.exists(resultFile)) {
+	File.delete(resultFile);
+}
+File.openSequence(outputdir);
+print("order=xyczt(default) channels=1 slices=" + zDim + " frames=" + nTime +" display=Color");
 
-//Change image file and psf file for every new image!!!
-
-
-	image = " -image file /Users/linnea/Desktop/Deconvolution/b-ERRed denoised final.tif";
-	psf = " -psf file /Users/linnea/Desktop/Deconvolution/PSF RW best 647.tif";
-	algorithm = " -algorithm RL 25.00";
-	parameters = "25";
-	output = " -out stack ST1";
-	monitor = " -monitor yes";
-	stats = " -stats show + save";
-	resources = " - fft FFTW2";
-	run("DeconvolutionLab2 Launch", image + psf + algorithm + parameters + output + monitor + stats + resources);
-	//click ok when process is done not before
-	wait(600000);
-	waitForUser;
-
-	selectImage("ST1");
-	saveAs("Tiff", path + filename + " denoised and deconvoluted");
-	run("Stack to Hyperstack...", "order=xyczt(default) channels=1 slices=8 frames=33 display=Grayscale");
-	run("Save");
+run("Stack to Hyperstack...", "order=xyczt(default) channels=1 slices=" + zDim + " frames=" + nTime +" display=Color");
+saveAs("tiff", resultFile);
